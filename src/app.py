@@ -182,14 +182,18 @@ def main():
 
     tts_fn = None
     if args.tts:
-        if args.tts_url:
+        from tts_broadcast import speak_local
+        sinks = [speak_local]                       # always speak on this machine
+        if args.tts_url:                            # ...and optionally the web gateway
             from tts_broadcast import broadcast
-            tts_fn = lambda text: broadcast(text, gateway_url=args.tts_url)
-            print(f"[tts] gateway -> {args.tts_url}")
+            sinks.append(lambda text: broadcast(text, gateway_url=args.tts_url))
+            print(f"[tts] local speech + gateway -> {args.tts_url}")
         else:
-            from tts_broadcast import speak_local
-            tts_fn = speak_local
-            print("[tts] local speech (macOS `say`)")
+            print("[tts] local speech (native OS TTS)")
+
+        def tts_fn(text):
+            for sink in sinks:
+                sink(text)
 
     buffer = TextBuffer()
     gemma = GemmaWorker(client, on_final=tts_fn)
