@@ -72,8 +72,9 @@ class TextBuffer:
 # Gemma runs off-thread so the video never stalls.
 # --------------------------------------------------------------------------- #
 class GemmaWorker:
-    def __init__(self, client):
+    def __init__(self, client, on_final=None):
         self.client = client
+        self.on_final = on_final          # called with the finished text (e.g. TTS)
         self.lock = threading.Lock()
         self.text = ""
         self.thinking = False
@@ -91,12 +92,17 @@ class GemmaWorker:
         def on_token(tok):
             with self.lock:
                 self.text += tok
+        final = None
         try:
             final = self.client.interpret(raw_letters, on_token=on_token)
             with self.lock:
                 self.text = final
         finally:
             self.thinking = False
+        # Pipe the finished reconstruction onward (TTS) — already off the video
+        # thread, so a slow gateway can't stall the loop.
+        if self.on_final and final:
+            self.on_final(final)
 
     def snapshot(self):
         with self.lock:
@@ -147,6 +153,10 @@ def main():
     ap.add_argument("--gemma-host", default="http://localhost:11434")
     ap.add_argument("--no-gemma", action="store_true")
     ap.add_argument("--stable-frames", type=int, default=8)
+    ap.add_argument("--tts", action="store_true",
+                    help="Speak Gemma's output aloud (local macOS `say` by default).")
+    ap.add_argument("--tts-url", default=None,
+                    help="Use a remote TTS gateway at this URL instead of local speech.")
     ap.add_argument("--debug", action="store_true",
                     help="Overlay raw handedness / fingersUp / prediction.")
     args = ap.parse_args()
@@ -170,8 +180,19 @@ def main():
         else:
             print(f"[warn] {msg}\n       Running with naive fallback until Ollama is ready.")
 
+    tts_fn = None
+    if args.tts:
+        if args.tts_url:
+            from tts_broadcast import broadcast
+            tts_fn = lambda text: broadcast(text, gateway_url=args.tts_url)
+            print(f"[tts] gateway -> {args.tts_url}")
+        else:
+            from tts_broadcast import speak_local
+            tts_fn = speak_local
+            print("[tts] local speech (macOS `say`)")
+
     buffer = TextBuffer()
-    gemma = GemmaWorker(client)
+    gemma = GemmaWorker(client, on_final=tts_fn)
     detector = handDetector(maxHands=1, detectionCon=0.7, trackCon=0.6)
 
     cap = cv2.VideoCapture(args.camera)

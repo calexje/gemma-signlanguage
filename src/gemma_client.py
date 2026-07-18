@@ -73,6 +73,10 @@ class GemmaClient:
             "prompt": prompt,
             "system": SYSTEM_PROMPT,
             "stream": on_token is not None,
+            # Gemma 4 is a reasoning model and "thinks" before answering — ~185
+            # hidden tokens / ~17s even for one word. This task needs no reasoning,
+            # so disable it: turns an ~18s reconstruction into ~1.7s.
+            "think": False,
             "options": {"temperature": 0.2},
         }
         try:
