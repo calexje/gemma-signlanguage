@@ -18,7 +18,7 @@ Letters implemented so far (exact definitions being matched):
     H = Sideways; index + middle extended together, thumb tip x between joints 9,10.
     I = Pinky up, rest down, thumb wrapped so its tip is near the ring DIP (15).
     J = Pinky extended, pointing DOWN — the only shape with tip 20 below wrist 0.
-    K = Index + middle up in a spread V (upright), thumb tip in the base of the V.
+    K = Index + middle up in a spread V (upright), thumb tip ABOVE both knuckles (5,9).
     L = Index up, others down, thumb horizontal, sticking out (away from middle).
     M = All fingers down; thumb tip in the PIP..DIP band, x between joints 10, 18.
     N = All fingers down; thumb tip above >=2 finger DIPs, x between joints 10, 18.
@@ -28,14 +28,14 @@ Letters implemented so far (exact definitions being matched):
     R = Index + middle up and CROSSED, ring/pinky down (fingers-crossed).
     T = All fingers down, thumb sticking UP between the index and middle fingers.
     U = Index + middle up TOGETHER (upright), ring/pinky down.
-    V = Spread V like K (upright) but thumb tucked into the palm (not at the base).
+    V = Spread V like K but thumb tip BELOW both knuckles (tucked into the palm).
     W = Index + middle + ring up, pinky + thumb down.
     X = Index raised but CURLED into a claw (not straight), others down.
     Y = Thumb + pinky out, the middle three curled.
-    Z = Index up straight, others down, thumb resting on TOP of the folded knuckles.
-
-    (S is not implemented yet — "fist, thumb in front vs tucked inside" is hard to
-     separate from A/M/N without depth the 2D landmarks don't give reliably.)
+    S = (demo swap) Index up straight, others down, thumb on TOP of the folded
+        knuckles. This is really the Z handshape, emitted as S: the true S (thumb
+        in FRONT of a fist) needs depth the 2D landmarks don't give, and the demo
+        needs an S, not a Z.
 
 Plus two non-letter gestures: an open palm emits SPACE (word break) and a "devil
 horns" (index + pinky up, middle + ring down) emits DELETE (backspace).
@@ -69,7 +69,6 @@ DELETE = "DELETE"   # "devil horns" — index + pinky up, middle + ring down
 _T_TOUCH_MIDDLE = 0.55    # D: max thumb-tip -> middle-finger distance to be "touching"
 _F_TOUCH_INDEX = 0.40     # F: max thumb-tip -> index-tip distance to be "touching"
 _I_NEAR_RING = 0.40       # I: max thumb-tip -> ring-DIP (15) distance ("wrapped")
-_K_BASE_DIST = 0.50       # K: max thumb-tip -> base-of-V (index/middle MCP midpoint)
 _V_SPREAD_MIN = 0.30      # index/middle fingertip gap above this = spread V (K/V), below = together (U/H)
 _C_MIN_THUMB_GAP = 0.50   # C: min thumb-tip -> nearest-fingertip gap (wide C opening)
 _O_MAX_GAP = 0.40         # O: max thumb-tip -> nearest-fingertip gap (thumb closes the ring)
@@ -192,10 +191,11 @@ def classify(fingers, lmList):
         if upright:
             if not spread:
                 return "U"
-            base = (pts[INDEX_MCP] + pts[MIDDLE_MCP]) / 2.0
-            if float(np.linalg.norm(t4 - base)) / s < _K_BASE_DIST:
-                return "K"       # thumb in the base of the V
-            return "V"           # thumb tucked into the palm
+            # K = thumb tip pokes UP, above both finger knuckles (5 and 9), into
+            # the base of the V. V = thumb tip BELOW both, tucked into the palm.
+            if t4[1] < pts[INDEX_MCP][1] and t4[1] < pts[MIDDLE_MCP][1]:
+                return "K"
+            return "V"
         else:                    # sideways
             if spread:
                 return "P"       # sideways K
@@ -247,7 +247,7 @@ def classify(fingers, lmList):
     if index_up and not (middle_up or ring_up or pinky_up):
         knuckle_y = min(pts[MIDDLE_MCP][1], pts[RING_MCP][1], pts[PINKY_MCP][1])
         if t4[1] < knuckle_y and _between(t4[0], pts[MIDDLE_MCP][0], pts[PINKY_MCP][0]):
-            return "Z"           # thumb resting on top of the knuckles
+            return "S"           # demo swap: Z handshape emitted as S (see docstring)
         touch = min(_d(pts, THUMB_TIP, j)
                     for j in (MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP)) / s
         if touch < _T_TOUCH_MIDDLE:
