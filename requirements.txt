@@ -1,0 +1,11 @@
+# Core computer-vision stack (the Analytics Vidhya tutorial)
+opencv-python>=4.9
+mediapipe>=0.10.14
+
+# Feature math + trainable sign classifier
+numpy>=1.26
+scikit-learn>=1.4
+joblib>=1.3
+
+# Talking to Gemma via the local Ollama server
+requests>=2.31

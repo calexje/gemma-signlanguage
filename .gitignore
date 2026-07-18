@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Trained artifacts / collected data / auto-downloaded model (regenerate locally)
+models/*.joblib
+models/*.task
+data/*.csv
+
+# OS
+.DS_Store
