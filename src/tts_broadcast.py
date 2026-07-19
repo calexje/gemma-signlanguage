@@ -21,10 +21,12 @@ DEFAULT_GATEWAY = ("https://ais-dev-u6a6fsv7ggun5ksmsunvur-"
                    "13504627249.europe-west3.run.app")
 
 
-def speak_local(text, voice=None):
-    """Speak `text` on THIS machine with the OS's native TTS — offline and
-    non-blocking (fire-and-forget), so it never stalls the caller. Works on
+def speak_local(text, voice=None, blocking=False):
+    """Speak `text` on THIS machine with the OS's native TTS — offline. Works on
     macOS (`say`), Linux (espeak/spd-say), and Windows (System.Speech).
+
+    Fire-and-forget by default; pass blocking=True to return only once the audio
+    has finished (used by the audio queue to keep clips in order, no overlap).
 
     The text is always passed as a subprocess ARGUMENT or environment variable,
     never interpolated into a shell string — so recognized text can't inject
@@ -35,25 +37,27 @@ def speak_local(text, voice=None):
     try:
         if sys.platform == "darwin":
             cmd = ["say"] + (["-v", voice] if voice else []) + [text]
-            subprocess.Popen(cmd)
+            proc = subprocess.Popen(cmd)
         elif sys.platform.startswith("linux"):
             engine = (shutil.which("espeak-ng") or shutil.which("espeak")
                       or shutil.which("spd-say"))
             if not engine:
                 print("[tts] no Linux TTS engine (install espeak or speech-dispatcher).")
                 return False
-            subprocess.Popen([engine, text])
+            proc = subprocess.Popen([engine, text])
         elif sys.platform == "win32":
             # text goes via env var, NOT the command string -> no injection
             ps = ("Add-Type -AssemblyName System.Speech; "
                   "(New-Object System.Speech.Synthesis.SpeechSynthesizer)"
                   ".Speak($env:GEMMA_TTS_TEXT)")
-            subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
-                             env={**os.environ, "GEMMA_TTS_TEXT": text})
+            proc = subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                                    env={**os.environ, "GEMMA_TTS_TEXT": text})
         else:
             print(f"[tts] no local TTS backend for platform {sys.platform!r}.")
             return False
         print(f'[tts] speaking: "{text}"')
+        if blocking:
+            proc.wait()
         return True
     except OSError as e:
         print(f"[tts] local speak error: {e}")

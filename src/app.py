@@ -6,9 +6,9 @@ Sign-to-Text with Gemma — the full pipeline.
 
 Controls (focus the video window):
     (spell by holding each letter's handshape until it "commits")
-    open palm     insert a word break  (also mappable to SPACE by the model)
-    SPACE key     send the buffer to Gemma for reconstruction
-    BACKSPACE     delete the last committed letter
+    open palm     end the word: send it to Gemma, speak the result, wipe buffer
+    devil horns   delete the last committed letter
+    SPACE key     same as the open-palm gesture (manual trigger)
     c             clear the buffer and Gemma output
     q             quit
 
@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import queue
 import threading
 import time
 
@@ -69,40 +70,75 @@ class TextBuffer:
 
 
 # --------------------------------------------------------------------------- #
-# Gemma runs off-thread so the video never stalls.
+# Two-stage pipeline, both off the video thread so it never stalls:
+#   GemmaWorker  — a queue of letter-strings -> reconstructed phrases
+#   AudioPlayer  — a queue of phrases -> spoken one at a time, in order
+# Because they're separate stages, Gemma can already be reconstructing the next
+# word while the current one is still being spoken.
 # --------------------------------------------------------------------------- #
+class AudioPlayer:
+    """Speak queued phrases sequentially (no overlap) on a worker thread."""
+    def __init__(self, speak_fn):
+        self.speak_fn = speak_fn          # blocking speak (returns when audio done)
+        self.q = queue.Queue()
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def enqueue(self, text):
+        if text and text.strip():
+            self.q.put(text)
+
+    def _loop(self):
+        while True:
+            text = self.q.get()
+            try:
+                self.speak_fn(text)
+            except Exception as e:                      # never kill the audio thread
+                print(f"[tts] play error: {e}")
+            finally:
+                self.q.task_done()
+
+
 class GemmaWorker:
+    """Reconstruct queued letter-strings with Gemma, one at a time. Streams into
+    `self.text` for the HUD and hands each finished phrase to `on_final`."""
     def __init__(self, client, on_final=None):
         self.client = client
-        self.on_final = on_final          # called with the finished text (e.g. TTS)
+        self.on_final = on_final          # called with each finished phrase (-> audio)
         self.lock = threading.Lock()
         self.text = ""
         self.thinking = False
-        self.status = ""
+        self.q = queue.Queue()
+        threading.Thread(target=self._loop, daemon=True).start()
 
-    def start(self, raw_letters):
-        if self.client is None or self.thinking or not raw_letters.strip():
+    def submit(self, raw_letters):
+        """Queue a letter-string for reconstruction (non-blocking; never dropped)."""
+        if self.client is None or not raw_letters or not raw_letters.strip():
             return
-        self.thinking = True
-        with self.lock:
-            self.text = ""
-        threading.Thread(target=self._run, args=(raw_letters,), daemon=True).start()
+        self.q.put(raw_letters)
 
-    def _run(self, raw_letters):
-        def on_token(tok):
+    def _loop(self):
+        while True:
+            raw = self.q.get()
+            self.thinking = True
             with self.lock:
-                self.text += tok
-        final = None
-        try:
-            final = self.client.interpret(raw_letters, on_token=on_token)
-            with self.lock:
-                self.text = final
-        finally:
-            self.thinking = False
-        # Pipe the finished reconstruction onward (TTS) — already off the video
-        # thread, so a slow gateway can't stall the loop.
-        if self.on_final and final:
-            self.on_final(final)
+                self.text = ""
+
+            def on_token(tok):
+                with self.lock:
+                    self.text += tok
+
+            final = None
+            try:
+                final = self.client.interpret(raw, on_token=on_token)
+                with self.lock:
+                    self.text = final
+            except Exception as e:
+                print(f"[gemma] error: {e}")
+            finally:
+                self.thinking = False
+                self.q.task_done()
+            if self.on_final and final:
+                self.on_final(final)      # hand off to the audio stage
 
     def snapshot(self):
         with self.lock:
@@ -180,23 +216,28 @@ def main():
         else:
             print(f"[warn] {msg}\n       Running with naive fallback until Ollama is ready.")
 
-    tts_fn = None
+    on_final = None
     if args.tts:
         from tts_broadcast import speak_local
-        sinks = [speak_local]                       # always speak on this machine
-        if args.tts_url:                            # ...and optionally the web gateway
+        sinks = []
+        if args.tts_url:                            # optional web gateway (non-blocking)
             from tts_broadcast import broadcast
             sinks.append(lambda text: broadcast(text, gateway_url=args.tts_url))
             print(f"[tts] local speech + gateway -> {args.tts_url}")
         else:
             print("[tts] local speech (native OS TTS)")
+        # blocking local speak LAST so the audio queue serializes clips in order
+        sinks.append(lambda text: speak_local(text, blocking=True))
 
-        def tts_fn(text):
+        def speak_all(text):
             for sink in sinks:
                 sink(text)
 
+        player = AudioPlayer(speak_all)
+        on_final = player.enqueue               # Gemma hands finished phrases here
+
     buffer = TextBuffer()
-    gemma = GemmaWorker(client, on_final=tts_fn)
+    gemma = GemmaWorker(client, on_final=on_final)
     detector = handDetector(maxHands=1, detectionCon=0.7, trackCon=0.6)
 
     cap = cv2.VideoCapture(args.camera)
@@ -204,7 +245,15 @@ def main():
         raise SystemExit(f"Could not open camera {args.camera}")
 
     pTime = 0
-    print("Running. Focus the video window. SPACE = ask Gemma, q = quit.")
+    def send_word():
+        """End of word: queue the current buffer for Gemma + speech, then wipe
+        it so the next word can start immediately (both run off the video thread)."""
+        raw = buffer.raw_for_gemma()
+        if raw.strip():
+            gemma.submit(raw)
+            buffer.clear()
+
+    print("Running. Focus the video window. Open palm = speak the word, q = quit.")
 
     while True:
         ok, img = cap.read()
@@ -218,7 +267,7 @@ def main():
         current, committed = recognizer.update(fingers, lmList)
 
         if committed == asl_rules.SPACE:
-            buffer.add_space()
+            send_word()                     # open palm: send -> speak -> wipe buffer
         elif committed == asl_rules.DELETE:
             buffer.backspace()
         elif committed is not None:
@@ -272,7 +321,7 @@ def main():
         if key == ord("q"):
             break
         elif key == ord(" "):
-            gemma.start(buffer.raw_for_gemma())
+            send_word()        # same as the open-palm gesture (manual trigger)
         elif key in (8, 127):  # backspace / delete
             buffer.backspace()
         elif key == ord("c"):
